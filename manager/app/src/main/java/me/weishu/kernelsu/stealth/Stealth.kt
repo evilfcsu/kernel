@@ -13,11 +13,11 @@ import java.io.File
  *
  * 存储布局（重启/卸载都不受影响，且普通应用读不到）：
  * ```
- * /data/adb/sad/sad.apk        管理器 APK 副本（uninstall 模式下用它装回来）
- * /data/adb/sad/watch.sh       监听脚本（root 运行，setsid 脱离会话）
- * /data/adb/sad/args           脚本参数
- * /data/adb/sad/work/{watch.pid, watch.log, deep_hide, hide_mode}
- * /data/adb/service.d/sad-watch.sh   开机钩子（应用被卸载后仍能拉起监听）
+ * /data/adb/evil/evil.apk        管理器 APK 副本（uninstall 模式下用它装回来）
+ * /data/adb/evil/watch.sh       监听脚本（root 运行，setsid 脱离会话）
+ * /data/adb/evil/rules.conf 等           脚本参数
+ * /data/adb/evil/work/{watch.pid, watch.log, deep_hide, hide_mode}
+ * /data/adb/service.d/evil-watch.sh   开机钩子（应用被卸载后仍能拉起监听）
  * ```
  *
  * 所有 root 调用都包在 runCatching 里：掉 root 后静默失败，App 本身照常可用。
@@ -36,6 +36,8 @@ object Stealth {
     const val KEY_COUNT = "count"
     const val KEY_WINDOW = "window_ms"
     const val KEY_HOLD = "hold_ms"
+    const val KEY_GESTURE_KEY = "gesture_key"
+    const val KEY_SELINUX_GUARD = "selinux_guard"
 
     /** MainActivity 读取它决定是否走"无痕"路径 */
     const val EXTRA_STEALTH = "stealth"
@@ -59,10 +61,14 @@ object Stealth {
     const val ROOT_DIR = "/data/adb/evil"
     private const val WORK_DIR = "$ROOT_DIR/work"
     private const val SCRIPT = "$ROOT_DIR/watch.sh"
-    private const val APK_COPY = "$ROOT_DIR/sad.apk"
+    private const val APK_COPY = "$ROOT_DIR/evil.apk"
     /** 安装中转：system_server 读不了 /data/adb（adb_data_file），必须放这里 */
-    private const val APK_STAGE = "/data/local/tmp/evil/sad.apk"
+    private const val APK_STAGE = "/data/local/tmp/evil/evil.apk"
     private const val ARGS_FILE = "$ROOT_DIR/args"
+    private const val RULES_FILE = "$ROOT_DIR/rules.conf"
+
+    /** 隐藏呼出默认用音量下键（与旧版行为一致） */
+    private const val DEFAULT_GESTURE_KEY = "voldown"
     private const val BOOT_HOOK = "/data/adb/service.d/evil-watch.sh"
 
     /** 配置镜像：应用数据目录可能丢失（卸载/重装），配置存一份在 root 私有目录 */
@@ -99,6 +105,19 @@ object Stealth {
     fun setWindowMs(c: Context, v: Int) = prefs(c).edit().putInt(KEY_WINDOW, v).commit()
 
     fun holdMs(c: Context) = prefs(c).getInt(KEY_HOLD, 3000)
+
+    /** 用哪个音量键触发：voldown / volup */
+    fun gestureKey(c: Context): String =
+        prefs(c).getString(KEY_GESTURE_KEY, DEFAULT_GESTURE_KEY) ?: DEFAULT_GESTURE_KEY
+
+    /** SELinux 防提权：手动开启，默认关闭 */
+    fun isSelinuxGuard(c: Context) = prefs(c).getBoolean(KEY_SELINUX_GUARD, false)
+
+    fun setSelinuxGuard(c: Context, v: Boolean) =
+        prefs(c).edit().putBoolean(KEY_SELINUX_GUARD, v).commit()
+
+    fun setGestureKey(c: Context, v: String) =
+        prefs(c).edit().putString(KEY_GESTURE_KEY, v).commit()
     fun setHoldMs(c: Context, v: Int) = prefs(c).edit().putInt(KEY_HOLD, v).commit()
 
     fun hideModePref(c: Context): String =
@@ -114,19 +133,30 @@ object Stealth {
         c.packageName + "/me.weishu.kernelsu.ui.MainActivity"
 
     // ---------------- root 侧资产 ----------------
-    /** 应用 assets 里的脚本落到私有目录（仅作 cp 源） */
+    /**
+     * APK 里存的是加密后的脚本（assets/stealth/watch.sh.enc），
+     * 编译期由 Gradle 任务从 tools/watch.sh 生成；
+     * unzip 出来只会看到密文，运行到这里才解出明文落到私有目录。
+     */
     private fun localScript(c: Context): File {
         val f = File(c.filesDir, "stealth/watch.sh")
         runCatching {
             if (!f.exists() || f.length() == 0L) {
                 f.parentFile?.mkdirs()
-                c.assets.open("stealth/watch.sh").use { i -> f.outputStream().use { o -> i.copyTo(o) } }
+                val enc = c.assets.open("stealth/watch.sh.enc").use { it.readBytes() }
+                val key = SCRIPT_KEY.toByteArray(Charsets.UTF_8)
+                val plain = ByteArray(enc.size) { i -> (enc[i].toInt() xor key[i % key.size].toInt()).toByte() }
+                f.writeBytes(plain)
+                f.setExecutable(true)
             }
         }
         return f
     }
 
-    /** APK 副本 + 脚本 + 工作目录，全部放到 /data/adb/sad */
+    /** 脚本 asset 的异或密钥（改这里要同步 tools/encrypt-watch.js） */
+    private const val SCRIPT_KEY = "Evil-Su-2026-watch"
+
+    /** APK 副本 + 脚本 + 工作目录，全部放到 /data/adb/evil */
     private fun prepareAssets(c: Context) {
         val apk = c.applicationInfo.sourceDir
         val src = localScript(c).absolutePath
@@ -167,7 +197,7 @@ object Stealth {
         writeWorkFile(c, "deep_hide", if (isDeepHide(c)) "1" else "0")
     }
 
-    /** 把当前配置镜像到 /data/adb/sad/stealth.conf（root 私有） */
+    /** 把当前配置镜像到 /data/adb/evil/stealth.conf（root 私有） */
     fun exportConfig(c: Context) {
         val lines = listOf(
             "enabled=" + if (isEnabled(c)) 1 else 0,
@@ -215,6 +245,11 @@ object Stealth {
         return n
     }
 
+    /** 防提权开关落到工作目录，脚本据此决定是否做 SELinux 检查 */
+    fun writeSelinuxFlag(c: Context) {
+        writeWorkFile(c, "selinux_guard", if (isSelinuxGuard(c)) "1" else "0")
+    }
+
     fun writeHideModeFile(c: Context) {
         writeWorkFile(c, "hide_mode", effectiveHideMode(c))
     }
@@ -232,28 +267,38 @@ object Stealth {
 
     /** 启动监听（root，需在后台线程调用） */
     fun start(c: Context): Boolean {
-        if (!isEnabled(c)) return false
         prepareAssets(c)
         writeDeepFlag(c)
         writeHideModeFile(c)
+        writeSelinuxFlag(c)
 
-        val hold = if (mode(c) == MODE_LONG) holdMs(c) else 0
-        val deep = if (isDeepHide(c)) 1 else 0
-        // 参数行：包名列表 模式 次数 窗口 长按 工作目录 组件 深隐 0/1 APK 路径
-        val args = listOf(
-            pkgs(c).joinToString(","),
-            mode(c),
-            count(c).toString(),
-            windowMs(c).toString(),
-            hold.toString(),
-            WORK_DIR,
-            managerComponent(c),
-            deep.toString(),
-            APK_STAGE,
-        ).joinToString(" ")
-        runCatching { Shell.cmd("printf '%s' \"$args\" > $ARGS_FILE").exec() }
+        // 规则 = 用户自定义规则 + 隐藏呼出生成的"拉起面具"规则
+        val rules = me.weishu.kernelsu.rules.Rules.load(c).toMutableList()
+        if (isArmed(c)) {
+            pkgs(c).forEach { pkg ->
+                rules.add(
+                    0,
+                    me.weishu.kernelsu.rules.Rule(
+                        enabled = true,
+                        pkg = pkg,
+                        key = gestureKey(c),
+                        mode = MODE_LONG,
+                        count = 0,
+                        windowMs = 0,
+                        holdMs = holdMs(c),
+                        action = me.weishu.kernelsu.rules.Rule.ACTION_LAUNCH,
+                    ),
+                )
+            }
+        }
+        if (rules.isEmpty()) {
+            stop(c)
+            return false
+        }
+        me.weishu.kernelsu.rules.Rules.writeRootFile(c, rules)
 
-        val cmd = "setsid sh $SCRIPT \$(cat $ARGS_FILE) >$WORK_DIR/watch.log 2>&1 &"
+        val cmd = "setsid sh $SCRIPT '$RULES_FILE' '$WORK_DIR' '${managerComponent(c)}' '$APK_STAGE' " +
+            ">>$WORK_DIR/watch.log 2>&1 &"
         val ok = runCatching { Shell.cmd(cmd).exec() }.isSuccess
         if (!ok) return false
         runCatching { Thread.sleep(400) }
@@ -267,7 +312,7 @@ object Stealth {
             Shell.cmd(
                 "touch $WORK_DIR/stop; sleep 1; " +
                     "P=\$(cat $WORK_DIR/watch.pid 2>/dev/null); [ -n \"\$P\" ] && kill -9 \"\$P\" 2>/dev/null; " +
-                    "for q in \$(ps -A -o PID,ARGS 2>/dev/null | awk '\$2 == \"sh\" && \$3 ~ /\\/sad\\/watch\\.sh$/ {print \$1}'); do kill -9 \"\$q\" 2>/dev/null; done; " +
+                    "for q in \$(ps -A -o PID,ARGS 2>/dev/null | awk '\$2 == \"sh\" && \$3 ~ /\\/evil\\/watch\\.sh$/ {print \$1}'); do kill -9 \"\$q\" 2>/dev/null; done; " +
                     "rm -f $WORK_DIR/watch.pid $WORK_DIR/stop"
             ).exec()
         }
@@ -289,6 +334,18 @@ object Stealth {
             runCatching {
                 val r = Shell.cmd("pm uninstall $pkg").exec()
                 Log.i(TAG, "hide: ok=${r.isSuccess} ${r.out}")
+            }
+            // App 已经被卸载，它那条 su 会话结束后监听可能一起消失；
+            // 这里再挂一个脱离 App 的延迟启动器，2 秒后确认监听在跑（单实例保护会去重）
+            runCatching {
+                val comp = managerComponent(c)
+                Shell.cmd(
+                    "setsid sh -c 'sleep 2; " +
+                        "pgrep -f \"[e]vil/watch.sh\" >/dev/null 2>&1 || " +
+                        "setsid sh $SCRIPT \"$RULES_FILE\" \"$WORK_DIR\" \"$comp\" \"$APK_STAGE\" " +
+                        ">>$WORK_DIR/watch.log 2>&1 &' >/dev/null 2>&1 &"
+                ).exec()
+                Log.i(TAG, "hide: 已安排卸载后补启监听")
             }
         } else {
             // 已安装就不要重复装：重复 install 会触发系统"正在更新"提示

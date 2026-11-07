@@ -12,6 +12,7 @@ import androidx.compose.material.icons.rounded.Cottage
 import androidx.compose.material.icons.rounded.Extension
 import androidx.compose.material.icons.rounded.Security
 import androidx.compose.material.icons.rounded.Settings
+import androidx.compose.material.icons.rounded.Terminal
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -139,6 +140,7 @@ enum class BottomBarDestination(
     Home(R.string.home, Icons.Rounded.Cottage),
     SuperUser(R.string.superuser, Icons.Rounded.Security),
     Module(R.string.module, Icons.Rounded.Extension),
+    Terminal(R.string.terminal, Icons.Rounded.Terminal),
     Setting(R.string.settings, Icons.Rounded.Settings)
 }
 

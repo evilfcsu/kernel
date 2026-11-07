@@ -10,11 +10,17 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import me.weishu.kernelsu.BuildConfig
 import me.weishu.kernelsu.ksuApp
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
+import javax.crypto.Cipher
+import javax.crypto.Mac
+import javax.crypto.spec.GCMParameterSpec
+import javax.crypto.spec.SecretKeySpec
+import android.util.Base64
 import org.json.JSONObject
 import java.net.URLEncoder
 import java.security.MessageDigest
@@ -22,7 +28,7 @@ import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 /**
- * 鸽子网络验证（https://sad.nogay.cn）客户端。
+ * 卡密网络验证客户端（服务地址与凭据由构建期 -P 属性注入，源码不含明文）。
  *
  * 每个请求带 `app_key` / `device_id` / `timestamp` / `nonce` / `sign`：
  *
@@ -40,7 +46,8 @@ import java.util.concurrent.TimeUnit
  */
 object CardKeyApi {
 
-    private const val BASE = "https://sad.nogay.cn"
+    /** 校验服务基址，构建期由 -PPSU_CARDKEY_BASE 注入（BuildConfig）。 */
+    private val BASE: String get() = BuildConfig.CARDKEY_BASE
 
     /**
      * 控制台「应用管理」里的凭证。
@@ -50,12 +57,12 @@ object CardKeyApi {
      * 注意这只挡住"翻字符串"，挡不住真正的逆向（挂钩 [_key] / [_secret] 的调用点照样能拿到
      * 明文）—— 强度主要还是靠服务端的"每台设备要绑卡 + 可随时封禁"。
      *
-     * 换应用时用 `node tools/encode-credentials.mjs <appKey> <appSecret>` 重新生成这三行。
+     * 这三个值由构建期属性注入（见 manager/app/build.gradle.kts 的 PSU_CARDKEY_*），
+     * 源码里不含任何明文或可逆掩码。
      */
-    private const val MASK_KEY_HEX = "39dd321b8bfb393e"
-    private const val APP_KEY_HEX = "78967128bfb8017d0a990722b8b97c0808ec"
-    private const val APP_SECRET_HEX =
-        "58ed017ab9ca0d5d0beb0a2eb8cf015b01b9022fbecb0f0e0abc042ebacf005f"
+    private val MASK_KEY_HEX: String get() = BuildConfig.CARDKEY_MASK
+    private val APP_KEY_HEX: String get() = BuildConfig.CARDKEY_KEY
+    private val APP_SECRET_HEX: String get() = BuildConfig.CARDKEY_SECRET
 
     private fun unmask(hex: String): String {
         val mask = hexToBytes(MASK_KEY_HEX)
@@ -104,21 +111,52 @@ object CardKeyApi {
     )
 
     /**
-     * 设备唯一标识。优先用 ANDROID_ID（无需权限，同签名同用户下稳定），
-     * 取不到就随机生成一个并持久化 —— 两者都会记住，避免每次启动换一个设备把名额占满。
+     * 设备双码（官方文档「设备双码」章节）：
+     * - A 码 device_id = android_id，永远可得，参与签名
+     * - B 码 device_b  = IMEI，需要 root；拿不到就留空，之后能读到会自动补进服务端空槽
+     *
+     * 后缀 -a / -b 只是给人看的约定，服务端原样存储、按字段名归槽。
      */
-    val deviceId: String by lazy {
+    private val androidId: String by lazy {
         val prefs = ksuApp.getSharedPreferences(CardKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
-        prefs.getString("device_id", null) ?: run {
+        prefs.getString("android_id", null) ?: run {
             val raw = runCatching {
                 Settings.Secure.getString(ksuApp.contentResolver, Settings.Secure.ANDROID_ID)
-            }.getOrNull().orEmpty()
-            val seed = if (raw.isNotBlank()) raw else UUID.randomUUID().toString().replace("-", "")
-            val value = "sad-" + seed.take(28)
-            prefs.edit().putString("device_id", value).apply()
-            value
+            }.getOrNull()?.takeIf { it.isNotBlank() }
+                ?: UUID.randomUUID().toString().replace("-", "")
+            prefs.edit().putString("android_id", raw).commit()
+            raw
         }
     }
+
+    /** A 码：AndroidID 一类 */
+    val deviceId: String by lazy { "evil-$androidId-a" }
+
+    /** B 码：IMEI 一类；读不到返回 null（不放进请求） */
+    fun deviceB(): String? {
+        val prefs = ksuApp.getSharedPreferences(CardKeyStore.PREFS_NAME, Context.MODE_PRIVATE)
+        prefs.getString("imei", null)?.let { return "evil-$it-b" }
+        val imei = readImei() ?: return null
+        prefs.edit().putString("imei", imei).commit()
+        android.util.Log.i("KsCardKey", "B 码已缓存")
+        return "evil-$imei-b"
+    }
+
+    /** 通过 root 读 IMEI：先试属性（快），再用 iphonesubinfo 兜底 */
+    private fun readImei(): String? = runCatching {
+        val cmd = "for p in persist.radio.imei1 persist.radio.imei ro.ril.oem.imei ro.ril.oem.imei1; do " +
+            "v=\$(getprop \$p 2>/dev/null); " +
+            "case \"\$v\" in [0-9][0-9][0-9][0-9][0-9][0-9][0-9][0-9]*) echo \$v; exit 0;; esac; done; " +
+            "service call iphonesubinfo 1 s16 com.android.shell 2>/dev/null"
+        val r = com.topjohnwu.superuser.Shell.cmd(cmd).exec()
+        val out = r.out.joinToString(" ")
+        Regex("[0-9]{15}").find(out)?.value?.let { return@runCatching it }
+        Regex("0x([0-9a-fA-F]{8})").findAll(out)
+            .map { it.groupValues[1].takeLast(4) }
+            .mapNotNull { h -> h.toIntOrNull(16)?.takeIf { c -> c in 0x30..0x39 }?.toChar() }
+            .joinToString("")
+            .takeIf { it.length >= 14 }
+    }.getOrNull()
 
     private fun md5(s: String): String =
         MessageDigest.getInstance("MD5").digest(s.toByteArray(Charsets.UTF_8))
@@ -135,6 +173,7 @@ object CardKeyApi {
             "nonce" to nonce,
             "sign" to md5(_key + deviceId + ts + nonce + _secret),
         )
+        deviceB()?.let { params["device_b"] = it }
         if (code != null) params["code"] = code
         return params
     }
@@ -145,6 +184,106 @@ object CardKeyApi {
      * 为什么要有 GET：这台服务端的 nginx 只给 /api/verify、/api/activate 配了 GET 路由，
      * POST 直接 404（返回 nginx 的 HTML）。所以先 POST，拿到非 JSON 响应就自动退回 GET。
      */
+    /**
+     * GZ1 加密通道（官方文档「加密通道（GZ1）」）：
+     * - key = HKDF-SHA256(app_secret, salt="gzv1|app_key|device_id", info="gz-payload", 32)
+     * - AES-256-GCM，12 字节 IV，AAD = "gzv1|app_key|device_id|timestamp"
+     * - 报文 `GZ1.` + base64url(IV‖TAG‖密文)，响应用 AAD "gzv1|resp|timestamp" 解密
+     *
+     * 明文通道在部分部署上被关闭（直接返回“参数不完整”），所以优先走这里。
+     */
+    private suspend fun callGz(path: String, code: String?): Outcome = withContext(Dispatchers.IO) {
+        val ts = (System.currentTimeMillis() / 1000).toString()
+        val dev = deviceId
+        val payload = JSONObject().apply {
+            put("timestamp", ts)
+            put("device_id", dev)
+            deviceB()?.let { put("device_b", it) }
+            put("nonce", UUID.randomUUID().toString().replace("-", "").take(32))
+            if (code != null) put("code", code)
+        }
+        val key = hkdfSha256(_secret.toByteArray(), "gzv1|$_key|$dev".toByteArray(), "gz-payload".toByteArray(), 32)
+        val iv = ByteArray(12).also { java.security.SecureRandom().nextBytes(it) }
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(
+            Cipher.ENCRYPT_MODE,
+            SecretKeySpec(key, "AES"),
+            GCMParameterSpec(128, iv),
+        )
+        // 长度混淆：尾部随机补 0~96 个空格
+        val plain = payload.toString() + " ".repeat((0..96).random())
+        cipher.updateAAD("gzv1|$_key|$dev|$ts".toByteArray())
+        // Java 的 GCM doFinal() 返回「密文‖标签」，协议要求「IV‖标签‖密文」，这里要拆开重排
+        val sealed = cipher.doFinal(plain.toByteArray())
+        val tagLen = 16
+        val ct = sealed.copyOfRange(0, sealed.size - tagLen)
+        val tag = sealed.copyOfRange(sealed.size - tagLen, sealed.size)
+        val body = "GZ1." + b64u(iv + tag + ct)
+        val request = Request.Builder().url(BASE + path)
+            .post(body.toRequestBody("text/plain".toMediaType()))
+            .header("X-GZ-App", _key)
+            .header("X-GZ-Device", dev)
+            .header("X-GZ-Ts", ts)
+            .build()
+        try {
+            client.newCall(request).execute().use { response ->
+                val text = response.body?.string().orEmpty()
+                val plainText = if (text.startsWith("GZ1.")) decryptGz(text, key, ts) ?: text else text
+                val json = runCatching { JSONObject(plainText) }.getOrNull()
+                    ?: return@withContext Outcome(false, -1, "HTTP ${response.code}", networkError = true)
+                val data = json.optJSONObject("data")
+                val hb = data?.optInt("heartbeat", 0) ?: 0
+                Outcome(
+                    ok = json.optInt("code", -1) == 0,
+                    code = json.optInt("code", -1),
+                    msg = json.optString("msg", "").ifBlank { "HTTP ${response.code}" },
+                    expireAt = data?.optString("expire_at", null)
+                        ?.takeIf { it.isNotBlank() && it != "null" },
+                    heartbeat = if (hb > 0) hb else null,
+                )
+            }
+        } catch (t: Throwable) {
+            Outcome(false, -1, t.message ?: t.javaClass.simpleName, networkError = true)
+        }
+    }
+
+    private fun b64u(bytes: ByteArray): String =
+        Base64.encodeToString(bytes, Base64.NO_WRAP or Base64.URL_SAFE or Base64.NO_PADDING)
+
+    private fun decryptGz(text: String, key: ByteArray, ts: String): String? = runCatching {
+        val b64 = text.removePrefix("GZ1.").trim()
+            .replace('-', '+').replace('_', '/')
+            .let { if (it.length % 4 == 0) it else it + "=".repeat(4 - it.length % 4) }
+        val raw = Base64.decode(b64, Base64.NO_WRAP)
+        val iv = raw.copyOfRange(0, 12)
+        val tag = raw.copyOfRange(12, 28)
+        val ct = raw.copyOfRange(28, raw.size)
+        val cipher = Cipher.getInstance("AES/GCM/NoPadding")
+        cipher.init(Cipher.DECRYPT_MODE, SecretKeySpec(key, "AES"), GCMParameterSpec(128, iv))
+        cipher.updateAAD("gzv1|resp|$ts".toByteArray())
+        String(cipher.doFinal(ct + tag)).trim()
+    }.getOrNull()
+
+    /** HKDF-SHA256（extract + expand），Android 上没有现成 API */
+    private fun hkdfSha256(ikm: ByteArray, salt: ByteArray, info: ByteArray, len: Int): ByteArray {
+        val mac = Mac.getInstance("HmacSHA256")
+        mac.init(SecretKeySpec(salt, "HmacSHA256"))
+        val prk = mac.doFinal(ikm)
+        var t = ByteArray(0)
+        val out = java.io.ByteArrayOutputStream()
+        var i = 1
+        while (out.size() < len) {
+            mac.init(SecretKeySpec(prk, "HmacSHA256"))
+            mac.update(t)
+            mac.update(info)
+            mac.update(byteArrayOf(i.toByte()))
+            t = mac.doFinal()
+            out.write(t)
+            i++
+        }
+        return out.toByteArray().copyOf(len)
+    }
+
     private suspend fun call(path: String, code: String?, useGet: Boolean): Outcome =
         withContext(Dispatchers.IO) {
             try {
@@ -188,6 +327,12 @@ object CardKeyApi {
     private val getFirst = setOf("/api/verify", "/api/activate")
 
     private suspend fun post(path: String, code: String?): Outcome {
+        val gz = callGz(path, code)
+        if (!gz.networkError) {
+            android.util.Log.w("CardKey", "$path GZ1 -> code=${gz.code} msg=${gz.msg}")
+            return gz
+        }
+        android.util.Log.w("CardKey", "$path GZ1 不可用（${gz.msg}），退回明文通道")
         val first = call(path, code, useGet = path in getFirst)
         if (!first.networkError) {
             android.util.Log.w("CardKey", "$path -> code=${first.code} msg=${first.msg}")

@@ -78,6 +78,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withTimeoutOrNull
+import me.weishu.kernelsu.ksuApp
 import me.weishu.kernelsu.R
 import kotlin.math.roundToInt
 
@@ -181,6 +182,8 @@ fun CardKeyScreen(
         var busy by remember { mutableStateOf(false) }
         var expireAt by remember { mutableStateOf<String?>(null) }
         val scope = rememberCoroutineScope()
+        // 设备码：IMEI 需要 root，放到后台算，算出前不占位
+        var deviceCode by remember { mutableStateOf("") }
 
         val emptyMsg = stringResource(R.string.cardkey_empty)
         val invalidMsg = stringResource(R.string.cardkey_invalid)
@@ -190,6 +193,15 @@ fun CardKeyScreen(
         val enter = remember { Animatable(0f) }
         LaunchedEffect(Unit) {
             enter.animateTo(1f, tween(durationMillis = 560, easing = FastOutSlowInEasing))
+        }
+
+        LaunchedEffect(Unit) {
+            deviceCode = kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.IO) {
+                val a = runCatching { CardKeyApi.deviceId }.getOrDefault("")
+                val b = runCatching { CardKeyApi.deviceB() }.getOrNull()
+                if (b.isNullOrEmpty()) a else a + "\n" + b
+            }
+            android.util.Log.i("KsCardKey", "gate device=$deviceCode")
         }
 
         // 失败时横向抖一下
@@ -302,7 +314,7 @@ fun CardKeyScreen(
                         contentAlignment = Alignment.Center,
                     ) {
                         Image(
-                            painter = painterResource(R.drawable.ic_launcher_sad_fg),
+                            painter = painterResource(R.drawable.ic_launcher_evil_fg),
                             contentDescription = null,
                             modifier = Modifier.size(64.dp),
                         )
@@ -493,6 +505,33 @@ fun CardKeyScreen(
                         letterSpacing = 0.8.sp,
                         textAlign = TextAlign.Center,
                     )
+
+                    if (deviceCode.isNotEmpty()) {
+                        Spacer(Modifier.height(6.dp))
+                        Text(
+                            text = "设备码 $deviceCode",
+                            color = p.subtitle.copy(alpha = 0.55f),
+                            fontSize = 10.sp,
+                            letterSpacing = 0.3.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable(
+                                    interactionSource = remember { MutableInteractionSource() },
+                                    indication = null,
+                                ) {
+                                    // 点一下复制，方便贴给客服
+                                    runCatching {
+                                        val cm = ksuApp.getSystemService(
+                                            android.content.ClipboardManager::class.java,
+                                        )
+                                        cm.setPrimaryClip(
+                                            android.content.ClipData.newPlainText("device", deviceCode),
+                                        )
+                                    }
+                                },
+                        )
+                    }
                 }
             }
 

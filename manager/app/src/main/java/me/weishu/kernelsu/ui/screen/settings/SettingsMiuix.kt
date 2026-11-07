@@ -1,5 +1,9 @@
 package me.weishu.kernelsu.ui.screen.settings
 
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.foundation.layout.Box
 import android.content.Intent
 import androidx.compose.foundation.layout.Spacer
@@ -75,6 +79,7 @@ fun SettingPagerMiuix(
     actions: SettingsScreenActions,
     bottomInnerPadding: Dp,
 ) {
+    val mainPagerState = me.weishu.kernelsu.ui.LocalMainPagerState.current
     val context = LocalContext.current
     val scrollBehavior = MiuixScrollBehavior()
     val enableBlur = LocalEnableBlur.current
@@ -109,6 +114,63 @@ fun SettingPagerMiuix(
                 contentPadding = innerPadding,
                 overscrollEffect = null,
             ) {
+                item {
+                    androidx.compose.material3.Text(
+                        text = "特色功能",
+                        modifier = Modifier.padding(start = 6.dp, top = 16.dp, bottom = 6.dp),
+                        style = androidx.compose.material3.MaterialTheme.typography.labelLarge,
+                    )
+                    Card(modifier = Modifier.fillMaxWidth()) {
+                        ArrowPreference(
+                            title = "隐藏与呼出",
+                            summary = "特定应用内按音量键唤出面具 / 平时从系统中隐藏",
+                            startAction = {
+                                Icon(
+                                    Icons.Rounded.VisibilityOff,
+                                    modifier = Modifier.padding(end = 6.dp),
+                                    contentDescription = "隐藏与呼出",
+                                    tint = colorScheme.onBackground
+                                )
+                            },
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, me.weishu.kernelsu.stealth.StealthSettingsActivity::class.java)
+                                )
+                            },
+                        )
+                        ArrowPreference(
+                            title = "脚本触发",
+                            summary = "应用或音量键手势 → 运行脚本 / 拉起面具",
+                            startAction = {
+                                Icon(
+                                    Icons.Rounded.Bolt,
+                                    modifier = Modifier.padding(end = 6.dp),
+                                    contentDescription = "脚本触发",
+                                    tint = colorScheme.onBackground
+                                )
+                            },
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, me.weishu.kernelsu.rules.ScriptTriggerActivity::class.java)
+                                )
+                            },
+                        )
+                        ArrowPreference(
+                            title = "终端",
+                            summary = "执行命令、浏览目录、跑脚本",
+                            startAction = {
+                                Icon(
+                                    Icons.Rounded.Terminal,
+                                    modifier = Modifier.padding(end = 6.dp),
+                                    contentDescription = "终端",
+                                    tint = colorScheme.onBackground
+                                )
+                            },
+                            onClick = { mainPagerState.animateToPage(3) },
+                        )
+                    }
+                }
+
                 item {
                     Card(
                         modifier = Modifier
@@ -466,16 +528,6 @@ fun SettingPagerMiuix(
                             show = showSendLogDialog.value,
                             onDismissRequest = { showSendLogDialog.value = false },
                             loadingDialog = loadingDialog
-                        )
-                        val stealthTitle = "隐藏与呼出"
-                        ArrowPreference(
-                            title = stealthTitle,
-                            summary = "特定应用内按音量键呼出面具 / 隐藏桌面图标",
-                            onClick = {
-                                context.startActivity(
-                                    Intent(context, me.weishu.kernelsu.stealth.StealthSettingsActivity::class.java)
-                                )
-                            },
                         )
                         val about = stringResource(id = R.string.about)
                         ArrowPreference(

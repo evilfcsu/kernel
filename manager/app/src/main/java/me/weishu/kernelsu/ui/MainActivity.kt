@@ -49,7 +49,6 @@ import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
-import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigationevent.NavigationEventInfo
@@ -126,8 +125,6 @@ class MainActivity : ComponentActivity() {
     private val stealthMode: Boolean
         get() = intent?.getBooleanExtra(me.weishu.kernelsu.stealth.Stealth.EXTRA_STEALTH, false) == true
     private var contentReady = false
-    private var splashStartedAt = 0L
-    private val splashAnimationDurationMs = 500L
 
 
     override fun onResume() {
@@ -177,12 +174,7 @@ class MainActivity : ComponentActivity() {
 
     @SuppressLint("UnusedMaterial3ScaffoldPaddingParameter")
     override fun onCreate(savedInstanceState: Bundle?) {
-        val splashScreen = installSplashScreen()
-        splashStartedAt = SystemClock.uptimeMillis()
         super.onCreate(savedInstanceState)
-        splashScreen.setKeepOnScreenCondition {
-            !contentReady || SystemClock.uptimeMillis() - splashStartedAt < splashAnimationDurationMs
-        }
 
         val isManager = Natives.isManager
         if (isManager && Natives.kernelUAPIVersion == Natives.managerUAPIVersion) install()
@@ -195,6 +187,8 @@ class MainActivity : ComponentActivity() {
                 val app = applicationContext
                 runCatching { st.importConfigIfMissing(app) }
                 runCatching { onManualLaunchIfHidden() }
+                // 打开 App 就确保监听在跑（否则用户装完打开、不点保存时不会有任何监听）
+                runCatching { st.sync(app) }
                 runCatching { st.bumpLaunchCounter(app) }
             }.start()
             intent?.let { intentChannel.trySend(it) }
@@ -486,7 +480,8 @@ fun MainScreen(
                         0 -> if (contentReady || isCurrentPage) HomePager(navController, bottomInnerPadding, isCurrentPage)
                         1 -> if (contentReady || isCurrentPage) SuperUserPager(navController, bottomInnerPadding, isCurrentPage)
                         2 -> if (contentReady || isCurrentPage) ModulePager(bottomInnerPadding, isCurrentPage)
-                        3 -> if (contentReady || isCurrentPage) SettingPager(navController, bottomInnerPadding, isCurrentPage)
+                        3 -> if (contentReady || isCurrentPage) me.weishu.kernelsu.ui.screen.terminal.TerminalPager(bottomInnerPadding)
+                        4 -> if (contentReady || isCurrentPage) SettingPager(navController, bottomInnerPadding, isCurrentPage)
                     }
                 }
             }

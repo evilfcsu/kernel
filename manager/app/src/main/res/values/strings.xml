@@ -385,5 +385,6 @@
     <string name="cardkey_expire">有效期至 %1$s</string>
     <string name="cardkey_footer">联网验证</string>
     <string name="cardkey_remember">记住此卡密</string>
-    <string name="home_brand_title">sad</string>
+    <string name="home_brand_title">Evil</string>
+    <string name="terminal">Terminal</string>
 </resources>

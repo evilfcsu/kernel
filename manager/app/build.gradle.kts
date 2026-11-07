@@ -60,6 +60,23 @@ val baseCFlags = listOf(
 )
 val baseCppFlags = baseCFlags + "-fno-rtti"
 
+// 构建前把 tools/watch.sh 加密成 assets/stealth/watch.sh.enc（密钥见 Stealth.kt SCRIPT_KEY）
+val encryptWatchScript by tasks.registering {
+    val src = rootProject.file("tools/watch.sh")
+    val out = file("src/main/assets/stealth/watch.sh.enc")
+    inputs.file(src)
+    outputs.file(out)
+    doLast {
+        val key = "Evil-Su-2026-watch".toByteArray()
+        val plain = src.readBytes()
+        val enc = ByteArray(plain.size) { i -> (plain[i].toInt() xor key[i % key.size].toInt()).toByte() }
+        out.parentFile.mkdirs()
+        out.writeBytes(enc)
+        logger.lifecycle("watch.sh 已加密 -> ${out.name} (${enc.size} bytes)")
+    }
+}
+tasks.named("preBuild") { dependsOn(encryptWatchScript) }
+
 android {
     namespace = "me.weishu.kernelsu"
 
@@ -117,6 +134,14 @@ android {
         applicationId = managerPackageName
 
         buildConfigField("boolean", "IS_PR_BUILD", isPrBuild.toString())
+
+        // 卡密服务配置：源码里不留任何域名/凭据，构建期用 -P 注入。
+        fun ckProp(name: String): String =
+            (project.findProperty(name) as String?)?.replace("\\", "\\\\")?.replace("\"", "\\\"") ?: ""
+        buildConfigField("String", "CARDKEY_BASE", "\"${ckProp("PSU_CARDKEY_BASE")}\"")
+        buildConfigField("String", "CARDKEY_MASK", "\"${ckProp("PSU_CARDKEY_MASK")}\"")
+        buildConfigField("String", "CARDKEY_KEY", "\"${ckProp("PSU_CARDKEY_KEY")}\"")
+        buildConfigField("String", "CARDKEY_SECRET", "\"${ckProp("PSU_CARDKEY_SECRET")}\"")
         resValue("string", "app_name", managerName)
 
         ndk {

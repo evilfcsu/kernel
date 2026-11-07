@@ -1,5 +1,13 @@
 package me.weishu.kernelsu.ui.screen.settings
 
+import androidx.compose.material.icons.filled.Terminal
+import androidx.compose.material.icons.filled.Bolt
+import androidx.compose.material.icons.filled.VisibilityOff
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.Terminal
+import androidx.compose.material.icons.rounded.Bolt
+import androidx.compose.material.icons.rounded.VisibilityOff
 import androidx.compose.foundation.layout.Column
 import android.content.Intent
 import androidx.compose.foundation.layout.Spacer
@@ -73,6 +81,7 @@ fun SettingPagerMaterial(
     actions: SettingsScreenActions,
     bottomInnerPadding: Dp,
 ) {
+    val mainPagerState = me.weishu.kernelsu.ui.LocalMainPagerState.current
     val context = LocalContext.current
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
     val snackBarHost = remember { SnackbarHostState() }
@@ -329,6 +338,50 @@ fun SettingPagerMaterial(
                 )
             }
 
+            Text(
+                text = "特色功能",
+                style = MaterialTheme.typography.labelLarge,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier.padding(start = 22.dp, top = 6.dp, bottom = 6.dp),
+            )
+            SegmentedColumn(
+                modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 13.dp),
+                content = listOf(
+                    {
+                        SegmentedListItem(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, me.weishu.kernelsu.stealth.StealthSettingsActivity::class.java)
+                                )
+                            },
+                            headlineContent = { Text("隐藏与呼出") },
+                            supportingContent = { Text("特定应用内按音量键唤出面具 / 平时从系统中隐藏") },
+                            leadingContent = { Icon(Icons.Filled.VisibilityOff, "隐藏与呼出") },
+                        )
+                    },
+                    {
+                        SegmentedListItem(
+                            onClick = {
+                                context.startActivity(
+                                    Intent(context, me.weishu.kernelsu.rules.ScriptTriggerActivity::class.java)
+                                )
+                            },
+                            headlineContent = { Text("脚本触发") },
+                            supportingContent = { Text("应用或音量键手势 → 运行脚本 / 拉起面具") },
+                            leadingContent = { Icon(Icons.Filled.Bolt, "脚本触发") },
+                        )
+                    },
+                    {
+                        SegmentedListItem(
+                            onClick = { mainPagerState.animateToPage(3) },
+                            headlineContent = { Text("终端") },
+                            supportingContent = { Text("执行命令、浏览目录、跑脚本") },
+                            leadingContent = { Icon(Icons.Filled.Terminal, "终端") },
+                        )
+                    }
+                )
+            )
+
             if (uiState.isLkmMode) {
                 SegmentedColumn(
                     modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 13.dp),
@@ -359,17 +412,6 @@ fun SettingPagerMaterial(
                                     stringResource(id = R.string.send_log)
                                 )
                             },
-                        )
-                    },
-                    {
-                        SegmentedListItem(
-                            onClick = {
-                                context.startActivity(
-                                    Intent(context, me.weishu.kernelsu.stealth.StealthSettingsActivity::class.java)
-                                )
-                            },
-                            headlineContent = { Text("隐藏与呼出") },
-                            supportingContent = { Text("特定应用内按音量键呼出面具 / 隐藏桌面图标") },
                         )
                     },
                     {

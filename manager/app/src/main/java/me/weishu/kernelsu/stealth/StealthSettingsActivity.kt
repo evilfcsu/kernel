@@ -92,10 +92,9 @@ private fun StealthSettingsScreen(
     var enabled by remember { mutableStateOf(Stealth.isEnabled(ctx)) }
     var deepHide by remember { mutableStateOf(Stealth.isDeepHide(ctx)) }
     var pkgs by remember { mutableStateOf(Stealth.pkgs(ctx)) }
-    var mode by remember { mutableStateOf(Stealth.mode(ctx)) }
-    var count by remember { mutableStateOf(Stealth.count(ctx)) }
-    var windowMs by remember { mutableStateOf(Stealth.windowMs(ctx)) }
     var holdMs by remember { mutableStateOf(Stealth.holdMs(ctx)) }
+    var gestureKey by remember { mutableStateOf(Stealth.gestureKey(ctx)) }
+    var selinuxGuard by remember { mutableStateOf(Stealth.isSelinuxGuard(ctx)) }
 
     var rootOk by remember { mutableStateOf<Boolean?>(null) }
     var running by remember { mutableStateOf(false) }
@@ -112,10 +111,10 @@ private fun StealthSettingsScreen(
     fun applyConfig() {
         Stealth.setEnabled(ctx, enabled)
         Stealth.setPkgs(ctx, pkgs)
-        Stealth.setMode(ctx, mode)
-        Stealth.setCount(ctx, count)
-        Stealth.setWindowMs(ctx, windowMs)
+        Stealth.setMode(ctx, Stealth.MODE_LONG)
         Stealth.setHoldMs(ctx, holdMs)
+        Stealth.setGestureKey(ctx, gestureKey)
+        Stealth.setSelinuxGuard(ctx, selinuxGuard)
         Stealth.setDeepHidePref(ctx, deepHide && enabled && pkgs.isNotEmpty())
         scope.launch {
             statusMsg = "正在应用…"
@@ -123,7 +122,14 @@ private fun StealthSettingsScreen(
                 runCatching { Stealth.sync(ctx) }.isSuccess
             }
             refresh()
-            statusMsg = if (ok) "已应用" else "应用失败（检查 root）"
+            statusMsg = when {
+                rootOk == false ->
+                    "未获得 root：请到 KernelSU 管理器里给「Evil」授权，再回来点一次保存"
+                enabled && pkgs.isNotEmpty() && !running ->
+                    "监听未启动：请确认已授权 root（授权后重新保存）"
+                !ok -> "应用失败（检查 root）"
+                else -> "已应用"
+            }
         }
     }
 
@@ -220,53 +226,52 @@ private fun StealthSettingsScreen(
                 )
             }
 
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .height(1.dp)
+                    .background(MaterialTheme.colorScheme.outlineVariant)
+            )
+
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text("手势：", modifier = Modifier.width(56.dp))
-                FilterChip(
-                    selected = mode == Stealth.MODE_LONG,
-                    onClick = { mode = Stealth.MODE_LONG },
-                    label = { Text("长按") },
-                )
-                Spacer(Modifier.width(8.dp))
-                FilterChip(
-                    selected = mode == Stealth.MODE_CLICK,
-                    onClick = { mode = Stealth.MODE_CLICK },
-                    label = { Text("连点") },
+                Column(Modifier.weight(1f)) {
+                    Text("SELinux 防提权", fontWeight = FontWeight.Medium)
+                    Text(
+                        "每秒检查一次：一旦发现 SELinux 被切成宽容（Permissive）立即硬重启。" +
+                            "默认关闭；需要 root 权限才能生效。",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+                Switch(
+                    checked = selinuxGuard,
+                    enabled = rootOk == true,
+                    onCheckedChange = {
+                        selinuxGuard = it
+                        applyConfig()
+                    },
                 )
             }
 
-            if (mode == Stealth.MODE_LONG) {
-                Text("长按时长", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(1500, 2000, 3000, 5000).forEach { ms ->
-                        FilterChip(
-                            selected = holdMs == ms,
-                            onClick = { holdMs = ms },
-                            label = { Text("${ms / 1000.0}s") },
-                        )
-                    }
+            Text("触发按键", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf("voldown" to "音量−", "volup" to "音量+").forEach { (v, label) ->
+                    FilterChip(
+                        selected = gestureKey == v,
+                        onClick = { gestureKey = v },
+                        label = { Text(label) },
+                    )
                 }
-            } else {
-                Text("连点次数", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(2, 3, 4).forEach { n ->
-                        FilterChip(
-                            selected = count == n,
-                            onClick = { count = n },
-                            label = { Text("$n 次") },
-                        )
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text("连点窗口", style = MaterialTheme.typography.bodySmall)
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    listOf(800, 1500, 2500).forEach { w ->
-                        FilterChip(
-                            selected = windowMs == w,
-                            onClick = { windowMs = w },
-                            label = { Text("${w / 1000.0}s") },
-                        )
-                    }
+            }
+
+            Text("长按时长", style = MaterialTheme.typography.bodySmall)
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                listOf(1500, 2000, 3000, 5000).forEach { ms ->
+                    FilterChip(
+                        selected = holdMs == ms,
+                        onClick = { holdMs = ms },
+                        label = { Text("${ms / 1000.0}s") },
+                    )
                 }
             }
 
